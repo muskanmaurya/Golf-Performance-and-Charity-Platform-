@@ -11,11 +11,11 @@ import {
   Clock,
   Heart,
   LogOut,
+  Lock,
   Settings,
   Target,
   Trophy,
   TrendingUp,
-  User as UserIcon,
 } from 'lucide-react'
 import Card from '@/components/ui/Card'
 import Button from '@/components/ui/Button'
@@ -25,17 +25,19 @@ import { createClient } from '@/lib/supabase/client'
 import type { Charity, Draw, GolfScore, Profile } from '@/lib/types'
 import { addScore } from '@/app/actions/scores'
 import { setPreferredCharity } from '@/app/actions/charity'
+import SubscribeButton from '@/components/dashboard/SubscribeButton'
 
 function getStatusBadge(status: string | undefined) {
-  if (status === 'active') return <Badge variant="success">Active</Badge>
+  if (status === 'active') return <Badge variant="success" className="bg-teal-500/15 text-teal-300 border-teal-400/25">Active</Badge>
   if (!status || status === 'inactive') return <Badge variant="default">Inactive</Badge>
   if (status === 'past_due') return <Badge variant="warning">Past Due</Badge>
   if (status === 'cancelled') return <Badge variant="danger">Cancelled</Badge>
   return <Badge variant="default">{status}</Badge>
 }
 
-function scoreDate(score: GolfScore): string {
-  return score.played_at.slice(0, 10)
+function scoreDate(score: GolfScore & { round_date?: string | null }): string {
+  const rawDate = score.played_at ?? score.round_date ?? new Date().toISOString()
+  return rawDate.slice(0, 10)
 }
 
 function getAverage(scores: GolfScore[]) {
@@ -53,8 +55,10 @@ export default function SubscriberDashboard(props: {
   charities: Charity[]
   nextDraw: Draw | null
   winningsPence: number
+  stripePriceIdMonthly: string
+  stripePriceIdYearly: string
 }) {
-  const { profile, scores, charities, nextDraw, winningsPence } = props
+  const { profile, scores, charities, nextDraw, winningsPence, stripePriceIdMonthly, stripePriceIdYearly } = props
   const router = useRouter()
 
   const [pending, startTransition] = useTransition()
@@ -65,6 +69,7 @@ export default function SubscriberDashboard(props: {
   const [charityModalOpen, setCharityModalOpen] = useState(false)
   const [changingCharity, setChangingCharity] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
+  const [avatarBroken, setAvatarBroken] = useState(false)
 
   const [optimisticScores, setOptimisticScores] = useOptimistic(
     scores,
@@ -73,12 +78,15 @@ export default function SubscriberDashboard(props: {
 
   const avg = useMemo(() => getAverage(optimisticScores), [optimisticScores])
   const firstName = profile?.full_name?.split(' ')[0] || 'Player'
+  const avatarInitial = firstName.trim().charAt(0).toUpperCase() || 'P'
   const subscriptionStatus = profile?.subscription_status ?? 'inactive'
+  const isSubscribed = subscriptionStatus === 'active'
 
   const selectedCharity = useMemo(() => {
-    const preferredId = profile?.preferred_charity_id ?? undefined
-    if (preferredId) return charities.find((c) => c.id === preferredId) ?? null
-    return charities[0] ?? null
+    if (!profile?.preferred_charity_id) {
+      return charities.find(c => c.name === 'Golf for Change') || charities[0] || null;
+    }
+    return charities.find(c => c.id === profile.preferred_charity_id) || charities.find(c => c.name === 'Golf for Change') || charities[0] || null;
   }, [charities, profile])
 
   const contributionPercent =
@@ -153,10 +161,15 @@ export default function SubscriberDashboard(props: {
     setError('')
     setChangingCharity(true)
     const res = await setPreferredCharity({ charityId, contributionPercent })
-    if (!res.ok) setError(res.error)
+    if (!res.ok) {
+      setError(res.error)
+      setChangingCharity(false)
+      return
+    }
     setChangingCharity(false)
     setCharityModalOpen(false)
     router.refresh()
+    window.location.reload()
   }
 
   const nextDrawCountdown = useMemo(() => {
@@ -246,28 +259,41 @@ export default function SubscriberDashboard(props: {
                   )}
                 </AnimatePresence>
 
-                <form onSubmit={onSubmitScore} className="grid sm:grid-cols-2 gap-4">
-                  <Input
-                    label="Stableford score (1–45)"
-                    type="number"
-                    value={scoreInput}
-                    onChange={(e) => setScoreInput(e.target.value)}
-                    placeholder="e.g. 32"
-                    required
-                  />
-                  <Input
-                    label="Date played"
-                    type="date"
-                    value={playedAt}
-                    onChange={(e) => setPlayedAt(e.target.value)}
-                    required
-                  />
-                  <div className="sm:col-span-2 flex justify-end">
-                    <Button type="submit" loading={pending}>
-                      Add Score
-                    </Button>
+                {isSubscribed ? (
+                  <form onSubmit={onSubmitScore} className="grid sm:grid-cols-2 gap-4">
+                    <Input
+                      label="Stableford score (1–45)"
+                      type="number"
+                      value={scoreInput}
+                      onChange={(e) => setScoreInput(e.target.value)}
+                      placeholder="e.g. 32"
+                      required
+                    />
+                    <Input
+                      label="Date played"
+                      type="date"
+                      value={playedAt}
+                      onChange={(e) => setPlayedAt(e.target.value)}
+                      required
+                    />
+                    <div className="sm:col-span-2 flex justify-end">
+                      <Button type="submit" loading={pending}>
+                        Add Score
+                      </Button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="rounded-2xl border border-amber-500/20 bg-amber-500/8 p-5">
+                    <div className="flex items-start gap-3">
+                      <Lock className="w-5 h-5 text-amber-400 mt-0.5" />
+                      <div>
+                        <p className="text-sm font-medium text-amber-300">Score entry is locked</p>
+                        <p className="text-xs text-slate-400 mt-1 mb-4">Activate your subscription to add scores and keep your dashboard synced.</p>
+                        <SubscribeButton userId={profile?.id ?? ''} priceId={stripePriceIdMonthly} />
+                      </div>
+                    </div>
                   </div>
-                </form>
+                )}
               </div>
             </Card>
           </motion.div>
@@ -327,9 +353,18 @@ export default function SubscriberDashboard(props: {
           <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 }}>
             <Card className="p-5">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-2xl bg-sky-500/10 border border-sky-500/20 flex items-center justify-center">
-                  <UserIcon className="w-5 h-5 text-sky-400" />
-                </div>
+                {profile?.avatar_url && !avatarBroken ? (
+                  <img
+                    src={profile.avatar_url}
+                    alt={profile?.full_name || 'Profile avatar'}
+                    className="w-10 h-10 rounded-2xl object-cover border border-sky-500/30"
+                    onError={() => setAvatarBroken(true)}
+                  />
+                ) : (
+                  <div className="w-10 h-10 rounded-2xl bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-300 font-semibold">
+                    {avatarInitial}
+                  </div>
+                )}
                 <div className="min-w-0">
                   <div className="text-sm text-slate-400">Profile</div>
                   <div className="font-semibold text-white truncate">{profile?.full_name || 'Digital Hero'}</div>
@@ -339,6 +374,37 @@ export default function SubscriberDashboard(props: {
                 <span className="text-slate-400">Status</span>
                 {getStatusBadge(subscriptionStatus)}
               </div>
+              {isSubscribed ? (
+                <div className="mt-4">
+                  <Badge variant="warning" className="bg-amber-500/15 text-amber-300 border-amber-400/25">
+                    Premium Active
+                  </Badge>
+                </div>
+              ) : (
+                <div className="mt-4 rounded-2xl border border-[#2a3345] bg-[#090d16] p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Heart className="w-4.5 h-4.5 text-amber-400" />
+                    <span className="font-semibold text-white">Upgrade to Premium</span>
+                  </div>
+                  <p className="text-xs text-slate-400 mb-4">Unlock score entry, draw participation, and premium dashboard access.</p>
+                  <div className="grid grid-cols-1 gap-3">
+                    <SubscribeButton
+                      userId={profile?.id ?? ''}
+                      priceId={stripePriceIdMonthly}
+                      label="Monthly - $5"
+                      variant="secondary"
+                      className="w-full"
+                    />
+                    <SubscribeButton
+                      userId={profile?.id ?? ''}
+                      priceId={stripePriceIdYearly}
+                      label="Yearly - Discounted"
+                      variant="outline"
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+              )}
             </Card>
           </motion.div>
 
@@ -458,7 +524,7 @@ export default function SubscriberDashboard(props: {
                           <div className="font-semibold text-white truncate">{charity.name}</div>
                           {charity.description && <div className="text-sm text-slate-400 mt-1 line-clamp-2">{charity.description}</div>}
                         </div>
-                        {selectedCharity?.id === charity.id && (
+                        {charity.id === profile?.preferred_charity_id && (
                           <Badge variant="success">Selected</Badge>
                         )}
                       </div>

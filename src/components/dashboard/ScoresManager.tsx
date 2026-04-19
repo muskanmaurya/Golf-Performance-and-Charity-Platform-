@@ -1,18 +1,23 @@
 'use client'
 
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Target, Plus, Trash2, TrendingUp, CircleAlert as AlertCircle, CircleCheck as CheckCircle2, Info } from 'lucide-react'
-import { createClient } from '@/lib/supabase/client'
 import Card from '@/components/ui/Card'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import Badge from '@/components/ui/Badge'
 import type { GolfScore } from '@/lib/types'
+import { addScore, deleteScore } from '@/app/actions/scores'
+import SubscribeButton from '@/components/dashboard/SubscribeButton'
 
 interface Props {
   initialScores: GolfScore[]
   userId: string
+  subscriptionStatus: string
+  stripePriceIdMonthly: string
+  stripePriceIdYearly: string
 }
 
 function getScoreLabel(score: number) {
@@ -30,7 +35,9 @@ function getPlayedDate(score: GolfScore) {
   return score.played_at
 }
 
-export default function ScoresManager({ initialScores, userId }: Props) {
+export default function ScoresManager({ initialScores, userId, subscriptionStatus, stripePriceIdMonthly, stripePriceIdYearly }: Props) {
+  const router = useRouter()
+  const isSubscribed = subscriptionStatus === 'active'
   const [scores, setScores] = useState<GolfScore[]>(initialScores)
   const [scoreInput, setScoreInput] = useState('')
   const [courseName, setCourseName] = useState('')
@@ -54,39 +61,47 @@ export default function ScoresManager({ initialScores, userId }: Props) {
       setError('Score must be between 1 and 45')
       return
     }
-    if (scores.length >= 5) {
-      setError('Maximum 5 rolling scores. Delete an old score to add a new one.')
-      return
-    }
+
     setLoading(true)
+    const res = await addScore(scoreNum, playedAt, courseName, notes)
 
-    const supabase = createClient()
-    const { data, error: dbError } = await supabase
-      .from('golf_scores')
-      .insert({ user_id: userId, score: scoreNum, course_name: courseName, played_at: playedAt, notes })
-      .select()
-      .single()
-
-    if (dbError) {
-      setError(dbError.message)
+    if (!res.ok) {
+      setError(res.error)
     } else {
-      setScores(prev => [data, ...prev].slice(0, 5))
+      // Keep UX snappy locally while server revalidation updates both pages.
+      const optimistic: GolfScore = {
+        id: `optimistic-${Date.now()}`,
+        user_id: userId,
+        score: scoreNum,
+        played_at: playedAt,
+        course_name: courseName,
+        notes,
+        created_at: new Date().toISOString(),
+      }
+      const merged = [...scores, optimistic]
+        .sort((a, b) => new Date(b.played_at).getTime() - new Date(a.played_at).getTime())
+        .slice(0, 5)
+      setScores(merged)
       setScoreInput('')
       setCourseName('')
       setNotes('')
       setShowForm(false)
       setSuccessMsg('Score added successfully!')
       setTimeout(() => setSuccessMsg(''), 3000)
+      router.refresh()
     }
     setLoading(false)
   }
 
   async function handleDelete(id: string) {
+    setError('')
     setDeleting(id)
-    const supabase = createClient()
-    const { error: dbError } = await supabase.from('golf_scores').delete().eq('id', id)
-    if (!dbError) {
+    const res = await deleteScore(id)
+    if (res.ok) {
       setScores(prev => prev.filter(s => s.id !== id))
+      router.refresh()
+    } else {
+      setError(res.error)
     }
     setDeleting(null)
   }
@@ -103,11 +118,12 @@ export default function ScoresManager({ initialScores, userId }: Props) {
           <p className="text-slate-400 text-sm mt-1">Track your Stableford performance — rolling 5 rounds</p>
         </div>
         <Button
-          onClick={() => setShowForm(!showForm)}
-          variant={showForm ? 'ghost' : 'primary'}
+          onClick={() => isSubscribed && setShowForm(!showForm)}
+          variant={isSubscribed ? (showForm ? 'ghost' : 'primary') : 'ghost'}
           size="sm"
+          disabled={!isSubscribed}
         >
-          {showForm ? 'Cancel' : <><Plus className="w-4 h-4" /> Add Score</>}
+          {isSubscribed ? (showForm ? 'Cancel' : <><Plus className="w-4 h-4" /> Add Score</>) : 'Locked'}
         </Button>
       </motion.div>
 
@@ -125,8 +141,36 @@ export default function ScoresManager({ initialScores, userId }: Props) {
         )}
       </AnimatePresence>
 
+      {!isSubscribed && (
+        <div className="mb-6 rounded-2xl border border-amber-500/20 bg-amber-500/8 p-5">
+          <div className="flex items-start gap-3">
+            <div className="text-amber-400 mt-0.5">!</div>
+            <div className="w-full">
+              <p className="font-medium text-amber-300 text-sm">Subscription required</p>
+              <p className="text-xs text-slate-400 mt-1 mb-4">Activate your subscription to unlock score entry.</p>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <SubscribeButton
+                  userId={userId}
+                  priceId={stripePriceIdMonthly}
+                  label="Monthly - $5"
+                  variant="secondary"
+                  className="w-full"
+                />
+                <SubscribeButton
+                  userId={userId}
+                  priceId={stripePriceIdYearly}
+                  label="Yearly - Discounted"
+                  variant="outline"
+                  className="w-full"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <AnimatePresence>
-        {showForm && (
+        {showForm && isSubscribed && (
           <motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
@@ -275,7 +319,7 @@ export default function ScoresManager({ initialScores, userId }: Props) {
                       initial={{ width: 0 }}
                       animate={{ width: `${bar}%` }}
                       transition={{ duration: 0.6, delay: i * 0.05 }}
-                      className="h-1.5 rounded-full bg-gradient-to-r from-sky-500 to-emerald-500"
+                      className="h-1.5 rounded-full bg-linear-to-r from-sky-500 to-emerald-500"
                     />
                   </div>
                   {score.notes && (

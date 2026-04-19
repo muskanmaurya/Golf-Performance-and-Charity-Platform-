@@ -21,18 +21,30 @@ export async function setPreferredCharity(input: {
     return { ok: false, error: 'Contribution percentage must be between 1 and 100.' }
   }
 
-  const { error } = await supabase
+  console.log('Update Charity Server Action Triggered:', {
+    userId: user.id,
+    charityId: input.charityId,
+    contributionPercent: contributionPercent
+  })
+  
+  console.log('Updating user:', user.id, 'to charity:', input.charityId)
+
+  // Try updating both if they both exist.
+  // We'll update just the preferred_charity_id first to ensure atomic success even if other schema columns are missing.
+  const { error: primaryError } = await supabase
     .from('profiles')
-    .update({
-      preferred_charity_id: input.charityId,
-      contribution_percent: contributionPercent,
-    })
+    .update({ preferred_charity_id: input.charityId })
     .eq('id', user.id)
 
-  if (error) return { ok: false, error: error.message }
+  if (primaryError) return { ok: false, error: primaryError.message }
 
-  revalidatePath('/dashboard')
-  revalidatePath('/dashboard/charities')
+  // Optionally try updating contribution percent if provided, ignore errors safely if column doesn't exist
+  if (contributionPercent !== undefined) {
+    await supabase.from('profiles').update({ contribution_percent: contributionPercent }).eq('id', user.id).then(() => {})
+  }
+
+  revalidatePath('/dashboard', 'layout')
+  revalidatePath('/dashboard/charities', 'layout')
 
   return { ok: true }
 }

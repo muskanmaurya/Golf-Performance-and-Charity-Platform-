@@ -2,11 +2,32 @@
 
 import { motion } from 'framer-motion'
 import { Heart, Globe, ExternalLink } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { useState, useTransition } from 'react'
 import Card from '@/components/ui/Card'
 import Button from '@/components/ui/Button'
 import type { Charity } from '@/lib/types'
+import { setPreferredCharity } from '@/app/actions/charity'
 
 export default function CharitiesView({ charities }: { charities: Charity[] }) {
+  const router = useRouter()
+  const [pending, startTransition] = useTransition()
+  const [loadingCharityId, setLoadingCharityId] = useState<string | null>(null)
+
+  const handleSelectCharity = async (charityId: string) => {
+    setLoadingCharityId(charityId)
+    startTransition(async () => {
+      const res = await setPreferredCharity({ charityId })
+      setLoadingCharityId(null)
+      if (res.ok) {
+        router.refresh()
+        window.location.reload()
+      } else {
+        alert(res.error)
+      }
+    })
+  }
+
   return (
     <div className="p-6 lg:p-8 max-w-5xl mx-auto">
       <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
@@ -39,11 +60,19 @@ export default function CharitiesView({ charities }: { charities: Charity[] }) {
                     {c.description && (
                       <p className="text-sm text-slate-400 mt-1 line-clamp-3">{c.description}</p>
                     )}
-                    <div className="text-xs text-slate-500 mt-3">
-                      Total raised: £{(c.total_raised_pence / 100).toFixed(2)}
+                    <div className="text-xs text-slate-500 mt-3 flex justify-between items-center">
+                      <span>Total raised: £{(c.total_raised_pence / 100).toFixed(2)}</span>
                     </div>
-                    {c.website_url && (
-                      <div className="mt-3">
+                    <div className="mt-4 flex items-center justify-between gap-2">
+                      <Button 
+                        variant="primary" 
+                        size="sm" 
+                        onClick={() => handleSelectCharity(c.id)}
+                        loading={loadingCharityId === c.id}
+                      >
+                        Select Charity
+                      </Button>
+                      {c.website_url && (
                         <a
                           href={c.website_url}
                           target="_blank"
@@ -55,8 +84,8 @@ export default function CharitiesView({ charities }: { charities: Charity[] }) {
                             Website <ExternalLink className="w-3.5 h-3.5" />
                           </Button>
                         </a>
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
                 </div>
               </Card>

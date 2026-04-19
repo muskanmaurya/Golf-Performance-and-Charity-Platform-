@@ -5,40 +5,57 @@ import type { Profile } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
+export const fetchCache = 'force-no-store'
+
+async function resolveAvatarUrl(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  avatarValue: string | null | undefined
+): Promise<string> {
+  if (!avatarValue) return ''
+
+  let filePath = avatarValue
+  const marker = '/avatars/'
+  const markerIndex = avatarValue.indexOf(marker)
+  if (markerIndex >= 0) {
+    filePath = avatarValue.slice(markerIndex + marker.length).split('?')[0]
+  }
+
+  if (!filePath.includes('/')) {
+    return avatarValue
+  }
+
+  const { data, error } = await supabase.storage.from('avatars').createSignedUrl(filePath, 60 * 60)
+  if (error || !data?.signedUrl) {
+    return avatarValue
+  }
+
+  return data.signedUrl
+}
 
 async function fetchProfile(
   supabase: Awaited<ReturnType<typeof createClient>>,
   userId: string
 ): Promise<Profile | null> {
   try {
-    const explicit = await supabase
+    const { data: profileData, error } = await supabase
       .from('profiles')
-      .select('id, email, full_name, role, subscription_status, stripe_customer_id, avatar_url, preferred_charity_id, contribution_percent, created_at, updated_at')
+      .select('*')
       .eq('id', userId)
       .maybeSingle()
 
-    if (!explicit.error && explicit.data) {
-      return {
-        ...explicit.data,
-        contribution_percent: explicit.data.contribution_percent ?? 10,
-      }
+    if (error) {
+      console.error('Fetch profile error:', error);
+      return null;
     }
 
-    const fallback = await supabase
-      .from('profiles')
-      .select('id, email, full_name, role, subscription_status, stripe_customer_id, avatar_url, created_at, updated_at')
-      .eq('id', userId)
-      .maybeSingle()
-
-    if (!fallback.error && fallback.data) {
+    if (profileData) {
       return {
-        ...fallback.data,
-        preferred_charity_id: null,
-        contribution_percent: 10,
+        ...profileData,
+        contribution_percent: profileData.contribution_percent ?? 10,
       }
     }
-  } catch {
-    // Defensive fallback in case Supabase schema cache is stale during deployment.
+  } catch (err) {
+    console.error('Fetch profile exception:', err);
   }
 
   return null
@@ -46,6 +63,12 @@ async function fetchProfile(
 
 export default async function DashboardPage() {
   const supabase = await createClient()
+  const stripePriceIdMonthly =
+    process.env.STRIPE_PRICE_ID_MONTHLY ??
+    process.env.STRIPE_PRICE_ID ??
+    process.env.NEXT_PUBLIC_STRIPE_PRICE_ID ??
+    ''
+  const stripePriceIdYearly = process.env.STRIPE_PRICE_ID_YEARLY ?? ''
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
 
@@ -73,13 +96,29 @@ export default async function DashboardPage() {
 
   console.log('Charities data:', charitiesResult.data)
 
+  const authFullName =
+    (typeof user.user_metadata?.full_name === 'string' && user.user_metadata.full_name.trim()) ||
+    (typeof user.user_metadata?.name === 'string' && user.user_metadata.name.trim()) ||
+    ''
+
+  const resolvedProfile = profile
+    ? {
+        ...profile,
+        full_name: profile.full_name || authFullName,
+        email: profile.email || user.email || '',
+        avatar_url: await resolveAvatarUrl(supabase, profile.avatar_url),
+      }
+    : null
+
   return (
     <SubscriberDashboard
-      profile={profile}
+      profile={resolvedProfile}
       scores={scoresResult.data ?? []}
       charities={charitiesResult.data ?? []}
       nextDraw={nextDrawResult.data ?? null}
       winningsPence={0}
+      stripePriceIdMonthly={stripePriceIdMonthly}
+      stripePriceIdYearly={stripePriceIdYearly}
     />
   )
 }

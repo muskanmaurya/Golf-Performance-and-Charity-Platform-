@@ -6,6 +6,7 @@ export interface Profile {
   id: string
   email: string
   full_name: string
+  display_name?: string | null
   role: UserRole
   subscription_status: SubscriptionStatus
   stripe_customer_id: string | null
