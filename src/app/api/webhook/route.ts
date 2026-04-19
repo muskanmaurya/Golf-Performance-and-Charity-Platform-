@@ -40,11 +40,11 @@ export async function POST(request: Request) {
         }
 
         const supabaseAdmin = getSupabaseAdminClient()
-        const { error } = await supabaseAdmin
-          .from('profiles')
-          .update({
-            subscription_status: 'active',
-          })
+        const profilesTable = 'profiles' as unknown as never
+        const updatePayload = { subscription_status: 'active' } as unknown as never
+        const { error } = await (supabaseAdmin as any)
+          .from(profilesTable)
+          .update(updatePayload)
           .eq('id', userId)
 
         if (error) {

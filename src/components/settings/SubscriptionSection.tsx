@@ -32,9 +32,15 @@ export default function SubscriptionSection({
 
     if (result.ok && result.url) {
       window.location.href = result.url
-    } else {
-      addToast(result.error, 'error')
+      return
     }
+
+    if (!result.ok) {
+      addToast(result.error, 'error')
+      return
+    }
+
+    addToast('Unable to open billing portal right now.', 'error')
   }
 
   const handleUpgrade = (priceId: string, planName: string) => {

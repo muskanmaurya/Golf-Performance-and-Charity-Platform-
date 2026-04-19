@@ -332,6 +332,23 @@ export async function deleteAccount(password: string): Promise<SettingsResult> {
     // Delete user data using admin client
     const supabaseAdmin = getSupabaseAdminClient()
 
+    // Capture stripe customer id before profile deletion (if column exists in this schema)
+    let stripeCustomerId: string | null = null
+    try {
+      const { data: profileData, error: stripeProfileError } = await supabaseAdmin
+        .from('profiles')
+        .select('stripe_customer_id')
+        .eq('id', user.id)
+        .maybeSingle()
+
+      if (!stripeProfileError) {
+        const row = profileData as { stripe_customer_id?: string | null } | null
+        stripeCustomerId = row?.stripe_customer_id ?? null
+      }
+    } catch {
+      // Ignore missing-column or schema-typing differences across environments.
+    }
+
     // Delete all related data (golf scores, draw entries, etc.)
     await Promise.all([
       supabaseAdmin.from('golf_scores').delete().eq('user_id', user.id),
@@ -346,19 +363,13 @@ export async function deleteAccount(password: string): Promise<SettingsResult> {
     }
 
     // Delete from Stripe if customer exists
-    try {
-      const { data: profile } = await supabaseAdmin
-        .from('profiles')
-        .select('stripe_customer_id')
-        .eq('id', user.id)
-        .maybeSingle()
-
-      if (profile?.stripe_customer_id) {
+    if (stripeCustomerId) {
+      try {
         const stripe = getStripeClient()
-        await stripe.customers.del(profile.stripe_customer_id)
+        await stripe.customers.del(stripeCustomerId)
+      } catch (stripeErr) {
+        console.warn('Failed to delete Stripe customer:', stripeErr)
       }
-    } catch (stripeErr) {
-      console.warn('Failed to delete Stripe customer:', stripeErr)
     }
 
     // Delete auth user
