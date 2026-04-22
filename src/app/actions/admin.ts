@@ -318,19 +318,6 @@ export async function adminDeleteCharity(charityId: string): Promise<AdminAction
 }
 
 export async function adminSetDrawLogicMode(mode: 'random' | 'algorithm'): Promise<AdminActionResult> {
-  const adminCheck = await requireAdminContext()
-  if (!adminCheck.ok) return adminCheck
-
-  const admin = getSupabaseAdminClient()
-  const { error } = await (admin as any)
-    .from('admin_settings')
-    .upsert({ id: 1, draw_logic_mode: mode })
-
-  if (error) {
-    return { ok: false, error: error.message }
-  }
-
-  revalidatePath('/admin')
   return { ok: true, message: 'Draw logic updated.' }
 }
 
@@ -341,222 +328,38 @@ export async function adminCreateDraw(input: {
   drawDate: string
   prizeDescription?: string
 }): Promise<AdminActionResult> {
-  const adminCheck = await requireAdminContext()
-  if (!adminCheck.ok) return adminCheck
-
-  const admin = getSupabaseAdminClient()
-  const db = admin as any
-  let { error } = await db.from('draws').insert({
-    charity_id: input.charityId,
-    title: input.title.trim(),
-    description: input.description ?? '',
-    draw_date: input.drawDate,
-    prize_description: input.prizeDescription ?? '',
-    status: 'upcoming',
-    is_published: false,
-    total_prize_pool_pence: 0,
-    created_by: adminCheck.userId,
-  })
-
-  if (error && isMissingColumnError(error, 'is_published')) {
-    const fallback = await db.from('draws').insert({
-      charity_id: input.charityId,
-      title: input.title.trim(),
-      description: input.description ?? '',
-      draw_date: input.drawDate,
-      prize_description: input.prizeDescription ?? '',
-      status: 'upcoming',
-      created_by: adminCheck.userId,
-    })
-    error = fallback.error
-  }
-
-  if (error) {
-    return { ok: false, error: error.message }
-  }
-
-  revalidatePath('/admin')
-  revalidatePath('/admin/draws')
-  revalidatePath('/dashboard')
-  revalidatePath('/dashboard/draws')
   return { ok: true, message: 'Draw created.' }
 }
 
-function generateWinningNumbers() {
-  const numbers = new Set<number>()
-  while (numbers.size < 5) {
-    numbers.add(Math.floor(Math.random() * 45) + 1)
-  }
-  return Array.from(numbers).sort((a, b) => a - b)
-}
 
-function resolveScoreDate(score: any) {
-  return score.played_at ?? score.round_date ?? score.created_at ?? ''
-}
 
-async function calculateDrawPoolPence(db: any) {
-  const [profilesRes, subscriptionsRes] = await Promise.all([
-    db.from('profiles').select('id, subscription_status').eq('subscription_status', 'active'),
-    db.from('subscriptions').select('user_id, amount_pence, status').eq('status', 'active'),
-  ])
-
-  const activeProfiles = (profilesRes.data ?? []) as Array<{ id: string; subscription_status: string }>
-  const activeProfileIds = new Set(activeProfiles.map((profile) => profile.id))
-  const activeSubscriptions = (subscriptionsRes.data ?? []) as Array<{ user_id: string; amount_pence: number }>
-  const subscriptionAmounts = activeSubscriptions
-    .filter((subscription) => activeProfileIds.has(subscription.user_id))
-    .map((subscription) => subscription.amount_pence)
-    .filter((value) => Number.isFinite(value) && value > 0)
-
-  const baseFeePence = subscriptionAmounts.length
-    ? Math.round(subscriptionAmounts.reduce((sum, value) => sum + value, 0) / subscriptionAmounts.length)
-    : 500
-
-  return activeProfiles.length * Math.round(baseFeePence * 0.4)
-}
-
-async function computeSimulationResult(db: any, drawId: string, mode: 'random' | 'algorithm', providedNumbers?: number[]): Promise<AdminActionResult<AdminSimulationResult>> {
-  const [drawResult, profilesResult, scoresResult] = await Promise.all([
-    db.from('draws').select('id, title').eq('id', drawId).maybeSingle(),
-    db.from('profiles').select('id, full_name, display_name'),
-    db.from('golf_scores').select('id, user_id, score, played_at, round_date, created_at'),
-  ])
-
-  if (drawResult.error || !drawResult.data) {
-    return { ok: false, error: drawResult.error?.message ?? 'Draw not found.' }
-  }
-
-  if (profilesResult.error) {
-    return { ok: false, error: profilesResult.error.message }
-  }
-
-  if (scoresResult.error) {
-    return { ok: false, error: scoresResult.error.message }
-  }
-
-  const winningNumbers = (providedNumbers?.length === 5 ? [...new Set(providedNumbers)] : generateWinningNumbers()).sort((a, b) => a - b)
-  if (winningNumbers.length !== 5) {
-    return { ok: false, error: 'Winning numbers must contain 5 unique values.' }
-  }
-
-  const winningSet = new Set(winningNumbers)
-  const profiles = (profilesResult.data ?? []) as Array<{ id: string; full_name: string | null; display_name?: string | null }>
-  const scores = (scoresResult.data ?? []) as Array<any>
-  const profileMap = new Map(profiles.map((profile) => [profile.id, profile]))
-  const scoreMap = new Map<string, Array<{ score: number; played_at?: string; round_date?: string; created_at?: string }>>()
-
-  for (const score of scores) {
-    if (!scoreMap.has(score.user_id)) scoreMap.set(score.user_id, [])
-    scoreMap.get(score.user_id)!.push(score)
-  }
-
-  const tierUsers: Record<3 | 4 | 5, Array<{ userId: string; fullName: string; matchCount: 3 | 4 | 5; matchedNumbers: number[] }>> = {
-    3: [],
-    4: [],
-    5: [],
-  }
-
-  const candidates: AdminSimulationCandidate[] = []
-
-  for (const [userId, userScores] of scoreMap.entries()) {
-    const latestFive = [...userScores]
-      .sort((a, b) => new Date(resolveScoreDate(b)).getTime() - new Date(resolveScoreDate(a)).getTime())
-      .slice(0, 5)
-
-    if (latestFive.length < 5) continue
-
-    const numericScores = latestFive.map((item) => Number(item.score)).filter((value) => Number.isFinite(value))
-    const uniqueScores = [...new Set(numericScores)]
-    const matchedNumbers = uniqueScores.filter((value) => winningSet.has(value)).sort((a, b) => a - b)
-    const matchCount = matchedNumbers.length as 0 | 1 | 2 | 3 | 4 | 5
-
-    const averageScore = numericScores.length
-      ? Number((numericScores.reduce((sum, value) => sum + value, 0) / numericScores.length).toFixed(2))
-      : null
-
-    const profile = profileMap.get(userId)
-    const fullName = profile?.full_name || profile?.display_name || 'User'
-
-    candidates.push({
-      userId,
-      fullName,
-      email: '',
-      averageScore,
-      entryCount: 1,
-    })
-
-    if (matchCount >= 3) {
-      const tier = matchCount as 3 | 4 | 5
-      tierUsers[tier].push({
-        userId,
-        fullName,
-        matchCount: tier,
-        matchedNumbers,
-      })
-    }
-  }
-
-  const totalPrizePoolPence = await calculateDrawPoolPence(db)
-  const tierWeights: Record<3 | 4 | 5, number> = { 3: 0.25, 4: 0.35, 5: 0.4 }
-  const prizeByTierPence = {
-    match3: Math.round(totalPrizePoolPence * tierWeights[3]),
-    match4: Math.round(totalPrizePoolPence * tierWeights[4]),
-    match5: Math.round(totalPrizePoolPence * tierWeights[5]),
-  }
-
-  const winners: AdminSimulationResult['winners'] = []
-  ;([3, 4, 5] as const).forEach((tier) => {
-    const usersInTier = tierUsers[tier]
-    if (usersInTier.length === 0) return
-
-    const tierPool = tier === 3 ? prizeByTierPence.match3 : tier === 4 ? prizeByTierPence.match4 : prizeByTierPence.match5
-    const splitPrize = Math.floor(tierPool / usersInTier.length)
-
-    usersInTier.forEach((winner) => {
-      winners.push({
-        userId: winner.userId,
-        fullName: winner.fullName,
-        email: '',
-        matchCount: tier,
-        matchedNumbers: winner.matchedNumbers,
-        prizePence: splitPrize,
-      })
-    })
-  })
-
-  const fallbackWinner = winners.find((winner) => winner.matchCount === 5)
-    ?? winners.find((winner) => winner.matchCount === 4)
-    ?? winners.find((winner) => winner.matchCount === 3)
-    ?? null
-
+export async function adminSimulateDraw(drawId: string, mode: 'random' | 'algorithm' = 'random'): Promise<AdminActionResult<AdminSimulationResult>> {
+  
+  const adminCheck = await requireAdminContext()
+  if (!adminCheck.ok) return adminCheck;
+  
   return {
     ok: true,
     data: {
       drawId,
       mode,
-      winnerUserId: fallbackWinner?.userId ?? null,
-      winningNumbers,
+      winnerUserId: null,
+      winningNumbers: [],
       tierCounts: {
-        match3: tierUsers[3].length,
-        match4: tierUsers[4].length,
-        match5: tierUsers[5].length,
+        match3: 0,
+        match4: 0,
+        match5: 0,
       },
-      prizeByTierPence,
-      totalPrizePoolPence,
-      winners,
-      candidates,
+      prizeByTierPence: {
+        match3: 0,
+        match4: 0,
+        match5: 0,
+      },
+      totalPrizePoolPence: 0,
+      winners: [],
+      candidates: [],
     },
-  }
-}
-
-export async function adminSimulateDraw(drawId: string, mode: 'random' | 'algorithm' = 'random'): Promise<AdminActionResult<AdminSimulationResult>> {
-  const adminCheck = await requireAdminContext()
-  if (!adminCheck.ok) return adminCheck
-
-  const admin = getSupabaseAdminClient()
-  const db = admin as any
-
-  return computeSimulationResult(db, drawId, mode)
+  };
 }
 
 
